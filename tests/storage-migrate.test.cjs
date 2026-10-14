@@ -118,3 +118,11 @@ test('quotes: Finnhub payload checks and FX source fallback', async () => {
   assert.equal(fx.rate, 31.9234);
   assert.equal(calls.length, 2);
 });
+
+test('Finnhub requests carry the key as a query parameter (custom headers fail CORS)', async () => {
+  let seen;
+  const fetcher = async (url, opts) => { seen = { url, opts }; return { ok: true, json: async () => ({ c: 10, t: Math.floor(Date.now() / 1000) }) }; };
+  await Market.finnhubQuote('BRK.B', 'abc 123', fetcher);
+  assert.match(seen.url, /symbol=BRK\.B&token=abc%20123$/);
+  assert.equal(seen.opts.headers, undefined);
+});

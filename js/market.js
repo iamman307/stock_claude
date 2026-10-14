@@ -16,9 +16,12 @@
     return { price, asOf: new Date(at).toISOString(), source: 'Finnhub' };
   }
 
-  // The key travels in a header, not the URL, so it stays out of logs and history.
+  // Finnhub does not allow custom headers in browser (CORS) requests, so the key
+  // goes in the query string. The request is HTTPS and the service worker never
+  // caches cross-origin URLs, so the key is not stored anywhere on the device.
   async function finnhubQuote(symbol, key, fetcher = root.fetch.bind(root)) {
-    const res = await fetcher('https://finnhub.io/api/v1/quote?symbol=' + encodeURIComponent(symbol), { headers: { 'X-Finnhub-Token': key }, cache: 'no-store' });
+    const url = 'https://finnhub.io/api/v1/quote?symbol=' + encodeURIComponent(symbol) + '&token=' + encodeURIComponent(key);
+    const res = await fetcher(url, { cache: 'no-store' });
     if (!res.ok) throw Error(res.status === 429 ? '請求太頻繁，請稍後再試' : res.status === 401 || res.status === 403 ? '金鑰無效' : '報價服務錯誤 ' + res.status);
     return parseFinnhub(await res.json());
   }

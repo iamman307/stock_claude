@@ -2,7 +2,7 @@
    renders them and turns form input into new database states. */
 (function () {
   'use strict';
-  const APP_VERSION = '1.0.0';
+  const APP_VERSION = '1.0.1';
   const C = window.Core;
   const store = window.Storage.createStore(window.localStorage);
   const $ = id => document.getElementById(id);
@@ -766,7 +766,7 @@
     try {
       const fx = db.fx.USDTWD;
       if (force || !fx.rate || Date.now() - C.time(fx.asOf) > 6 * 36e5) {
-        try { const r = await Market.usdTwd(); next.fx.USDTWD = { rate: r.rate, asOf: C.normalizeTime(r.asOf) || C.nowIso(), source: r.source }; msgs.push(`匯率 ${r.rate}`); }
+        try { const r = await Market.usdTwd(); next.fx.USDTWD = { rate: r.rate, asOf: C.nowIso(), source: r.source }; msgs.push(`匯率 ${r.rate}`); }
         catch (e) { errors.push(e.message); }
       }
       const key = store.getKey();
