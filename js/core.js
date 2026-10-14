@@ -74,6 +74,7 @@
       sources: { asOf: '', loan: 0, self: 0, family: 0 },
       reserve: { loanPayment: 0, emergency: 0 },
       navHistory: [],
+      plans: [],
       settings: { upColor: 'red', backupReminderDays: 7 },
       meta: { createdAt: nowIso(now), updatedAt: nowIso(now), lastExportAt: '', migratedFrom: null, legacy: null }
     };
@@ -118,6 +119,7 @@
     db.loan.startDate = /^\d{4}-\d{2}-\d{2}$/.test(String(db.loan.startDate || '')) ? db.loan.startDate : '';
     db.sources = { ...base.sources, ...obj(db.sources, {}) };
     db.reserve = { ...base.reserve, ...obj(db.reserve, {}) };
+    db.plans = arr(db.plans).map(normalizePlan).filter(Boolean);
     db.navHistory = arr(db.navHistory).filter(p => p && /^\d{4}-\d{2}-\d{2}$/.test(p.date) && num(p.totalTwd) >= 0);
     db.settings = { ...base.settings, ...obj(db.settings, {}) };
     db.meta = { ...base.meta, ...obj(db.meta, {}) };
@@ -170,6 +172,60 @@
     if (!ok) { e._invalid = '資料不完整'; warnings.push(`資金事件 ${i + 1} 資料不完整，暫不計入`); }
     else delete e._invalid;
     return e;
+  }
+
+  /* ---------- dip-buying plans ---------- */
+  function normalizePlan(raw) {
+    if (!raw || typeof raw !== 'object') return null;
+    const ref = String(raw.refTicker || '').trim().toUpperCase();
+    if (!ref) return null;
+    const tranches = (Array.isArray(raw.tranches) ? raw.tranches : []).map(t => ({
+      id: String(t.id || uid()), dropPct: Math.max(0, num(t.dropPct, 0)), ticker: String(t.ticker || '').trim().toUpperCase(),
+      amountTwd: num(t.amountTwd, 0), doneAt: t.doneAt ? normalizeTime(t.doneAt) : ''
+    })).filter(t => t.ticker && t.amountTwd > 0).sort((a, b) => a.dropPct - b.dropPct);
+    const limits = (Array.isArray(raw.limits) ? raw.limits : []).map(l => ({
+      id: String(l.id || uid()), name: String(l.name || ''), tickers: (Array.isArray(l.tickers) ? l.tickers : String(l.tickers || '').split(/[\s,，、]+/)).map(x => String(x).trim().toUpperCase()).filter(Boolean),
+      maxPct: num(l.maxPct, NaN)
+    })).filter(l => l.tickers.length && l.maxPct > 0);
+    return { id: String(raw.id || uid()), name: String(raw.name || ref + ' 回調加碼'), refTicker: ref, high: num(raw.high) > 0 ? num(raw.high) : null, highAt: raw.highAt ? normalizeTime(raw.highAt) : '', tranches, limits, createdAt: normalizeTime(raw.createdAt) || nowIso() };
+  }
+
+  // The reference high only ever ratchets up, from the price the owner entered
+  // and every quote seen afterwards.
+  function updatePlanHighs(db) {
+    let changed = false;
+    const plans = (db.plans || []).map(pl => {
+      const q = db.quotes[pl.refTicker];
+      if (q && q.price > 0 && !(pl.high >= q.price)) { changed = true; return { ...pl, high: q.price, highAt: q.asOf || nowIso() }; }
+      return pl;
+    });
+    return changed ? { ...db, plans } : db;
+  }
+
+  function planStatus(db, p) {
+    const pool = p.totalAssets;
+    const mktOf = t => sum(p.positions.filter(r => r.ticker === t && r.priced), r => r.mktTwd);
+    return (db.plans || []).map(pl => {
+      const q = db.quotes[pl.refTicker];
+      const price = q && q.price > 0 ? q.price : NaN;
+      const drawdown = pl.high > 0 && isNum(price) ? (price / pl.high - 1) * 100 : NaN;
+      const tranches = pl.tranches.map(t => {
+        const trigger = pl.high > 0 ? pl.high * (1 - t.dropPct / 100) : NaN;
+        return { ...t, triggerPrice: trigger, reached: isNum(price) && price <= trigger + 1e-9, done: Boolean(t.doneAt), gapPct: isNum(price) && trigger > 0 ? (price / trigger - 1) * 100 : NaN };
+      });
+      const ready = tranches.filter(t => t.reached && !t.done);
+      const next = tranches.find(t => !t.reached && !t.done) || null;
+      const remaining = sum(tranches.filter(t => !t.done), t => t.amountTwd);
+      const limits = pl.limits.map(l => {
+        const value = sum(l.tickers, mktOf);
+        return { ...l, value, pct: pool > 0 ? value / pool * 100 : NaN, over: pool > 0 && value / pool * 100 > l.maxPct };
+      });
+      // A ready tranche that would push a capped group over its limit is flagged.
+      for (const t of ready) {
+        t.breaches = limits.filter(l => l.tickers.includes(t.ticker) && pool > 0 && (l.value + t.amountTwd) / pool * 100 > l.maxPct).map(l => l.name || l.tickers.join('、'));
+      }
+      return { ...pl, price, quoteAsOf: q ? q.asOf : '', drawdown, tranches, ready, next, remaining, limits, cash: p.bank.configured ? p.bank.afterPending : NaN };
+    });
   }
 
   const validTrades = db => db.trades.filter(t => !t._invalid);
@@ -594,6 +650,10 @@
     if ((db.trades.length || db.cashEvents.length) && (!isNum(lastExport) || (updated > lastExport && now - lastExport > days * DAY))) {
       add('warning', isNum(lastExport) ? `已 ${Math.floor((now - lastExport) / DAY)} 天沒匯出備份` : '還沒匯出過備份，資料只存在這支手機', 'backup');
     }
+    for (const pl of planStatus(db, p)) {
+      for (const t of pl.ready) add('warning', `${pl.refTicker} 距高點 ${Math.abs(pl.drawdown).toFixed(1)}%，已到加碼點：${t.ticker} ${Math.round(t.amountTwd).toLocaleString('zh-TW')} 元${t.breaches && t.breaches.length ? `（會超過「${t.breaches.join('、')}」上限）` : ''}`, 'plan');
+      for (const l of pl.limits) if (l.over) add('info', `「${l.name || l.tickers.join('、')}」佔投資池 ${l.pct.toFixed(1)}%，超過你設的 ${l.maxPct}%`, 'plan');
+    }
     const rank = { critical: 0, warning: 1, info: 2 };
     return out.sort((a, b) => rank[a.level] - rank[b.level]);
   }
@@ -615,7 +675,7 @@
     emptyDb, normalizeDb, normalizeTrade, normalizeEvent,
     tradeBaseAmount, tradeTwd, tradeBankTwd, isPending,
     computePositions, valuePositions, bucketCapital, bankSummary, reconcileBank, binanceSummary,
-    strategyStats, tradeStats, xirr, loanSchedule, bucketReturn, settleBatch, portfolio, alerts, recordNav, fxRate
+    strategyStats, tradeStats, xirr, loanSchedule, normalizePlan, updatePlanHighs, planStatus, bucketReturn, settleBatch, portfolio, alerts, recordNav, fxRate
   };
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
   root.Core = api;

@@ -241,3 +241,5 @@ dialog.sheet::backdrop { background: rgba(10, 20, 30, .45); }
 }
 @media (prefers-reduced-motion: reduce) { * { transition: none !important; scroll-behavior: auto !important; } }
 @media (forced-colors: active) { .stack span, .swatch, .dot { forced-color-adjust: none; } }
+.form-grid > .full { grid-column: 1 / -1; }
+.over { color: var(--critical); }

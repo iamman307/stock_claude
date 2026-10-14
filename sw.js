@@ -1,6 +1,6 @@
 // Network first, cache as fallback, so an update is never stuck behind an old cache.
 // Only same-origin files are cached; market-data requests are never stored.
-const CACHE = 'stock-claude-v1.1.0';
+const CACHE = 'stock-claude-v1.2.0';
 const ASSETS = ['./', './index.html', './css/app.css', './js/core.js', './js/migrate.js', './js/storage.js', './js/market.js', './js/charts.js', './js/app.js', './manifest.webmanifest', './assets/icon.svg', './assets/icon-192.png', './assets/icon-512.png'];
 
 self.addEventListener('install', event => {

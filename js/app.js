@@ -2,7 +2,7 @@
    renders them and turns form input into new database states. */
 (function () {
   'use strict';
-  const APP_VERSION = '1.1.0';
+  const APP_VERSION = '1.2.0';
   const C = window.Core;
   const store = window.Storage.createStore(window.localStorage);
   const $ = id => document.getElementById(id);
@@ -121,7 +121,7 @@
         <div class="legend">${parts.map(x => `<div class="legend-item"><i class="swatch" style="background:${COLORS[x.key]}"></i><span>${x.label}</span><strong class="num">${ok(x.value) ? short(x.value) + (total ? ` · ${Math.round(x.value / total * 100)}%` : '') : '—'}</strong></div>`).join('')}</div>
       </div>`;
     const list = C.alerts(db, p);
-    const actions = { fx: ['更新', 'refresh'], quotes: ['更新', 'refresh'], bank: ['核對', 'bank'], binance: ['更新', 'binance'], backup: ['匯出', 'export'], settle: ['核銷', 'gotoTrades'], trades: ['查看', 'gotoTrades'], capital: ['查看', 'gotoFunds'] };
+    const actions = { fx: ['更新', 'refresh'], quotes: ['更新', 'refresh'], bank: ['核對', 'bank'], binance: ['更新', 'binance'], backup: ['匯出', 'export'], settle: ['核銷', 'gotoTrades'], trades: ['查看', 'gotoTrades'], capital: ['查看', 'gotoFunds'], plan: ['查看', 'gotoFunds'] };
     const alertsHtml = list.length ? `<div class="alerts">${list.map(a => {
       const act = actions[a.action];
       return `<div class="alert ${a.level}">${ICON[a.level]}<p>${esc(a.text)}</p>${act ? `<button class="btn btn-small" data-act="${act[1]}">${act[0]}</button>` : ''}</div>`;
@@ -144,7 +144,12 @@
       ${row({ lead: `<i class="dot" style="background:${COLORS.cash}"></i>`, title: '交割戶', sub: p.bank.configured ? `預估，含 ${p.bank.pending.length} 筆待交割` : '尚未設定', end: n(money(p.cash)), cls: 'clickable', attrs: 'data-act="gotoFunds"' })}
     </ul>`;
 
-    $('view-overview').innerHTML = band + alertsHtml +
+    const planCompact = C.planStatus(db, p).map(pl => section(esc(pl.name), `<ul class="rows">${row({
+      title: `${esc(pl.refTicker)} 距高點 <span class="${tone(pl.drawdown)}">${ok(pl.drawdown) ? pl.drawdown.toFixed(1) + '%' : '—'}</span>`,
+      sub: pl.ready.length ? `已到加碼點：${pl.ready.map(t => `${esc(t.ticker)} ${money(t.amountTwd)}`).join('、')}` : pl.next ? `下一個加碼點 −${pl.next.dropPct}%（價格 ≤ ${money(pl.next.triggerPrice, 2)}，還要再跌 ${Math.abs(pl.next.gapPct).toFixed(1)}%）` : '所有加碼點都已執行',
+      end: n(money(pl.price, 2)), cls: 'clickable', attrs: 'data-act="gotoFunds"'
+    })}</ul>`)).join('');
+    $('view-overview').innerHTML = band + alertsHtml + planCompact +
       `<div class="two-col">${section('帳戶', accounts)}${section('損益構成', pnl)}</div>` +
       section('資產走勢', '<div class="chart" id="navChart"></div>', { note: '每天第一次打開時自動記錄一筆總資產' });
     Charts.lineChart($('navChart'), db.navHistory.map(x => ({ x: C.time(x.date), y: x.totalTwd, label: x.date.replace(/-/g, '/') })), {
@@ -381,7 +386,7 @@
       sub: `${day(e.date)}${e.note ? ' · ' + esc(e.note) : ''}`, end: n(money(e.amountTwd)), cls: 'clickable', attrs: `data-act="event" data-id="${esc(e.id)}"`
     })).join('')}</ul>` : '<div class="empty">還沒有資金紀錄</div>';
 
-    $('view-funds').innerHTML =
+    $('view-funds').innerHTML = planCards(p) +
       `<div class="two-col">` +
       section('交割戶', bankHtml, { action: '<button class="btn btn-small btn-primary" data-act="bank">核對餘額</button>', note: '餘額 = 上次核對 ＋ 之後的交割與轉帳；核對時有差額會直接告訴你差多少' }) +
       section('幣安', binanceHtml, { action: '<button class="btn btn-small btn-primary" data-act="binance">更新總資產</button>', note: '損益 = 最新總資產 − 快照當時以前的淨投入' }) +
@@ -389,6 +394,88 @@
       section('配置本金', capHtml, { action: '<button class="btn btn-small" data-act="cashEvent">記錄資金</button>', note: '可動用 = 本金 − 持倉成本 ＋ 已實現；轉入幣安的錢從波段本金扣除' }) +
       loanSection(p) +
       section('資金紀錄', evHtml);
+  }
+
+  function planCards(p) {
+    const list = C.planStatus(db, p);
+    if (!list.length) return section('加碼計畫', '<div class="empty">事先寫好「跌多少、買什麼、買多少」，到了加碼點會提醒你</div>', { action: '<button class="btn btn-small btn-primary" data-act="plan">建立計畫</button>' });
+    return list.map(pl => {
+      const head = row({
+        title: `${esc(pl.refTicker)} ${money(pl.price, 2)}`,
+        sub: pl.high ? `近期高點 ${money(pl.high, 2)}${pl.highAt ? '（' + day(pl.highAt) + '）' : ''} · 高點會隨報價自動更新` : '還沒有高點，請到編輯填入',
+        end: n(ok(pl.drawdown) ? pl.drawdown.toFixed(1) + '%' : '—', tone(pl.drawdown)), end2: n('距高點')
+      });
+      const tr = pl.tranches.map(t => row({
+        lead: `<span class="tag" style="min-width:46px;text-align:center">${t.dropPct ? '−' + t.dropPct + '%' : '現在'}</span>`,
+        title: `${esc(t.ticker)} ${money(t.amountTwd)}`,
+        sub: t.done ? `已執行 ${day(t.doneAt)}` : `觸發價 ≤ ${money(t.triggerPrice, 2)}${!t.reached && ok(t.gapPct) ? ` · 還要再跌 ${Math.abs(t.gapPct).toFixed(1)}%` : ''}${t.breaches && t.breaches.length ? ` · 會超過「${esc(t.breaches.join('、'))}」上限` : ''}`,
+        end: t.done ? `<button class="btn btn-small" data-act="planUndo" data-plan="${esc(pl.id)}" data-tranche="${esc(t.id)}">取消</button>`
+          : t.reached ? `<button class="btn btn-small btn-primary" data-act="planDone" data-plan="${esc(pl.id)}" data-tranche="${esc(t.id)}">已買進</button>` : n('未到', 'muted')
+      })).join('');
+      const lim = pl.limits.map(l => row({ title: `上限：${esc(l.name || l.tickers.join('、'))}`, sub: `${esc(l.tickers.join('、'))} · 不超過投資池 ${l.maxPct}%`, end: n(ok(l.pct) ? l.pct.toFixed(1) + '%' : '—', l.over ? 'over' : ''), end2: l.over ? n('超過上限', 'over small') : '' })).join('');
+      const foot = row({ title: '尚未執行的計畫金額', sub: ok(pl.cash) ? `交割戶交割後預估 ${money(pl.cash)}` : '', end: n(money(pl.remaining), ok(pl.cash) && pl.remaining > pl.cash ? 'over' : ''), cls: 'total' });
+      return section(esc(pl.name), `<ul class="rows">${head}${tr}${lim}${foot}</ul>`, { action: `<button class="btn btn-small" data-act="plan" data-plan="${esc(pl.id)}">編輯</button>`, note: '到了加碼點會在總覽提醒；買進後記得記一筆交易，再回來按「已買進」' });
+    }).join('');
+  }
+
+  function openPlan(id) {
+    const existing = (db.plans || []).find(x => x.id === id);
+    const q = db.quotes.QQQM;
+    const pl = existing || {
+      name: 'QQQM 回調加碼', refTicker: 'QQQM', high: q ? q.price : '',
+      tranches: [[0, 'QQQM', 100000], [10, 'QQQM', 100000], [15, 'QQQM', 100000], [20, 'QQQM', 100000], [25, 'QLD', 100000]].map(([d, t, a]) => ({ dropPct: d, ticker: t, amountTwd: a })),
+      limits: [{ name: 'QLD 槓桿 ETF', tickers: ['QLD'], maxPct: 10 }, { name: '半導體個股', tickers: ['AVGO', 'SNDK', 'MU'], maxPct: 40 }]
+    };
+    const T = [...pl.tranches]; while (T.length < 6) T.push({ dropPct: '', ticker: '', amountTwd: '' });
+    const Lm = [...pl.limits]; while (Lm.length < 3) Lm.push({ name: '', tickers: [], maxPct: '' });
+    const trRows = T.map((t, i) => `<div class="field"><label for="f-d${i}">跌幅 %</label><input id="f-d${i}" name="d${i}" type="number" step="any" inputmode="decimal" value="${esc(t.dropPct)}" placeholder="0＝現在"></div>
+      <div class="field"><label for="f-t${i}">標的</label><input id="f-t${i}" name="t${i}" type="text" autocapitalize="characters" value="${esc(t.ticker)}" placeholder="QQQM"></div>
+      <div class="field full"><label for="f-a${i}">金額（台幣）</label><input id="f-a${i}" name="a${i}" type="number" step="1" inputmode="numeric" value="${esc(t.amountTwd)}"${t.doneAt ? ' data-done="' + esc(t.doneAt) + '"' : ''}></div>`).join('<hr class="full" style="border:0;border-top:1px solid var(--rule);margin:2px 0">');
+    const limRows = Lm.map((l, i) => `<div class="field"><label for="f-ln${i}">上限名稱</label><input id="f-ln${i}" name="ln${i}" type="text" value="${esc(l.name)}"></div>
+      <div class="field"><label for="f-lp${i}">最多佔 %</label><input id="f-lp${i}" name="lp${i}" type="number" step="any" value="${esc(l.maxPct)}"></div>
+      <div class="field full"><label for="f-lt${i}">包含的代號（用逗號分開）</label><input id="f-lt${i}" name="lt${i}" type="text" autocapitalize="characters" value="${esc(l.tickers.join(', '))}"></div>`).join('');
+    openSheet({
+      title: existing ? '編輯加碼計畫' : '建立加碼計畫', submitLabel: '儲存計畫',
+      body: `<div class="form-grid">
+        ${field('pname', '計畫名稱', { type: 'text', value: pl.name, full: true })}
+        ${field('ref', '用哪一檔判斷跌幅', { type: 'text', value: pl.refTicker, attrs: 'autocapitalize="characters"', hint: 'QQQM 等同那斯達克 100' })}
+        ${field('high', '近期最高價', { value: pl.high ?? '', hint: '填 52 週或近期高點；之後報價創高會自動更新' })}
+        <p class="section-note full" style="padding:0;margin-top:6px">加碼點（跌幅相對高點；0 代表現在就買）</p>
+        ${trRows}
+        <p class="section-note full" style="padding:0;margin-top:6px">集中度上限（佔整個投資池的比例，超過會提醒）</p>
+        ${limRows}
+      </div>`,
+      extra: existing ? '<button type="button" class="btn btn-danger" data-sheet-delete>刪除計畫</button>' : '',
+      onExtra: () => {
+        if (!confirm('確定刪除這個加碼計畫？')) return false;
+        const next = C.clone(db); next.plans = next.plans.filter(x => x.id !== id);
+        return commit(next, '刪除加碼計畫', '計畫已刪除');
+      },
+      onSubmit: form => {
+        const tranches = T.map((t, i) => ({ id: t.id, dropPct: numVal(form, 'd' + i), ticker: val(form, 't' + i), amountTwd: numVal(form, 'a' + i), doneAt: t.doneAt || '' }))
+          .filter(t => t.ticker && t.amountTwd > 0).map(t => ({ ...t, dropPct: ok(t.dropPct) ? t.dropPct : 0 }));
+        if (!tranches.length) throw Error('至少要有一個加碼點（標的和金額）');
+        if (tranches.some(t => t.dropPct < 0 || t.dropPct >= 100)) throw Error('跌幅請填 0 到 99');
+        const limits = Lm.map((l, i) => ({ id: l.id, name: val(form, 'ln' + i), tickers: val(form, 'lt' + i), maxPct: numVal(form, 'lp' + i) }));
+        const high = numVal(form, 'high');
+        if (!(high > 0)) throw Error('請填近期最高價，才能計算跌幅');
+        const plan = C.normalizePlan({ id: existing ? existing.id : undefined, name: val(form, 'pname'), refTicker: val(form, 'ref'), high, highAt: existing && existing.high === high ? existing.highAt : C.nowIso(), tranches, limits, createdAt: existing ? existing.createdAt : undefined });
+        if (!plan) throw Error('請填判斷跌幅的代號');
+        let next = C.clone(db);
+        next.plans = existing ? next.plans.map(x => (x.id === existing.id ? plan : x)) : [...(next.plans || []), plan];
+        next = C.updatePlanHighs(next);
+        if (commit(next, existing ? '編輯加碼計畫' : '建立加碼計畫', '加碼計畫已儲存')) { refreshQuotes(false); return true; }
+        return false;
+      }
+    });
+  }
+
+  function markTranche(planId, trancheId, done) {
+    const next = C.clone(db);
+    const pl = next.plans.find(x => x.id === planId); if (!pl) return;
+    const t = pl.tranches.find(x => x.id === trancheId); if (!t) return;
+    t.doneAt = done ? C.nowIso() : '';
+    commit(next, done ? `加碼執行 ${t.ticker}` : `取消加碼 ${t.ticker}`, done ? '已標記，記得到交易頁記一筆買進' : '已取消標記');
   }
 
   function openEvent(id) {
@@ -699,7 +786,7 @@
   }
 
   function openQuote() {
-    const tickers = [...new Set(C.portfolio(db).positions.map(r => r.ticker))];
+    const tickers = [...new Set([...C.portfolio(db).positions.map(r => r.ticker), ...(db.plans || []).map(pl => pl.refTicker)])];
     openSheet({
       title: '手動報價', submitLabel: '儲存報價',
       body: `<div class="form-grid">
@@ -716,6 +803,7 @@
         if (!(price > 0)) throw Error('請填價格');
         const next = C.clone(db);
         next.quotes[val(form, 'ticker')] = { price, currency: val(form, 'currency'), asOf: C.nowIso(), source: '手動' };
+        Object.assign(next, C.updatePlanHighs(next));
         return commit(next, `${val(form, 'ticker')} 手動報價`, '報價已更新');
       }
     });
@@ -799,7 +887,8 @@
       }
       const key = store.getKey();
       if (key) {
-        const tickers = [...new Set(C.computePositions(db).open.filter(p => p.currency === 'USD').map(p => p.ticker))]
+        const planRefs = (db.plans || []).map(pl => pl.refTicker);
+        const tickers = [...new Set([...C.computePositions(db).open.filter(p => p.currency === 'USD').map(p => p.ticker), ...planRefs])]
           .filter(t => force || !db.quotes[t] || Date.now() - C.time(db.quotes[t].asOf) > 2 * 36e5);
         const results = await Promise.allSettled(tickers.map(t => Market.finnhubQuote(t, key)));
         let count = 0;
@@ -810,6 +899,7 @@
         if (count) msgs.push(`${count} 檔報價`);
       } else if (force) errors.push('尚未設定 Finnhub 金鑰，美股報價請到設定頁設定或手動輸入');
       if (msgs.length) {
+        next = C.updatePlanHighs(next);
         // Market data is not an edit: save without a history version.
         db = store.save(next, '更新行情', { quiet: true });
         render();
@@ -890,6 +980,7 @@
       addTrade: openAddTrade, settle: openSettle, trade: () => openTrade(el.dataset.id), position: () => openPosition(el.dataset.key),
       event: () => openEvent(el.dataset.id), cashEvent: openCashEvent, strategy: openStrategy, quote: openQuote, loan: openLoan,
       fxManual: openFxManual, finnhub: openFinnhub,
+      plan: () => openPlan(el.dataset.plan), planDone: () => markTranche(el.dataset.plan, el.dataset.tranche, true), planUndo: () => { if (confirm('取消這個加碼點的「已買進」標記？')) markTranche(el.dataset.plan, el.dataset.tranche, false); },
       finnhubRemove: () => { store.setKey(''); renderSettings(); toast('金鑰已從這台裝置移除'); },
       restore: () => {
         if (!confirm('確定還原到這個版本？目前的資料會先保留在還原紀錄裡。')) return;

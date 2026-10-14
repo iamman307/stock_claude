@@ -221,3 +221,27 @@ test('financing uses the schedule when the loan terms are complete', () => {
   assert.equal(p.financing, 688 + p.loan.interestPaid);
   assert.ok(p.loan.interestPaid > 9000);
 });
+
+test('dip-buying plan: drawdown, triggers, ratcheting high and concentration limits', () => {
+  let db = dbWith({
+    trades: [trade({ ticker: 'AVGO', date: '2026-10-01T22:00', qty: 10, price: 100, fx: 32 })],
+    quotes: { AVGO: { price: 100, currency: 'USD', asOf: '2026-10-14T05:00:00+08:00' }, QQQM: { price: 270, currency: 'USD', asOf: '2026-10-14T05:00:00+08:00' } },
+    bank: { snapshots: [{ id: 's', date: '2026-10-10', balance: 50000, reserved: 0 }] },
+    binance: { snapshots: [{ id: 'b', date: '2026-10-13', totalTwd: 0 }], strategies: [] },
+    plans: [{ refTicker: 'qqqm', high: 300, tranches: [{ dropPct: 0, ticker: 'QQQM', amountTwd: 10000 }, { dropPct: 10, ticker: 'QQQM', amountTwd: 10000 }, { dropPct: 20, ticker: 'QLD', amountTwd: 5000 }],
+      limits: [{ name: 'semis', tickers: 'AVGO, MU', maxPct: 30 }, { name: 'QLD', tickers: ['QLD'], maxPct: 5 }] }]
+  });
+  const p = C.portfolio(db, NOW);
+  const [pl] = C.planStatus(db, p);
+  near(pl.drawdown, -10);
+  assert.deepEqual(pl.ready.map(t => t.dropPct), [0, 10]);
+  assert.equal(pl.next.dropPct, 20);
+  near(pl.next.triggerPrice, 240);
+  near(pl.next.gapPct, (270 / 240 - 1) * 100);
+  // 32,000 of AVGO in an 82,000 pool = 39% > 30%
+  assert.ok(pl.limits[0].over);
+  assert.match(C.alerts(db, p, NOW).map(a => a.text).join('\n'), /已到加碼點/);
+  // a new high ratchets up, a lower quote never lowers it
+  db.quotes.QQQM.price = 320; db = C.updatePlanHighs(db); assert.equal(db.plans[0].high, 320);
+  db.quotes.QQQM.price = 250; db = C.updatePlanHighs(db); assert.equal(db.plans[0].high, 320);
+});
