@@ -133,6 +133,7 @@
       ${row({ title: '股價變動', cls: 'indent', end: n(signed(p.priceEffect), tone(p.priceEffect)) })}
       ${row({ title: '匯率變動', cls: 'indent', end: n(signed(p.fxEffect), tone(p.fxEffect)) })}
       ${row({ title: '幣安', sub: p.binance.configured ? `快照 ${day(p.binance.latest.date)}` : '尚未設定', end: n(signed(p.binancePnl), tone(p.binancePnl)) })}
+      ${p.incomeTwd ? row({ title: '股利／折讓／利息', end: n(signed(p.incomeTwd), tone(p.incomeTwd)) }) : ''}
       ${row({ title: '融資成本', sub: '信貸開辦費＋已付利息', end: n(p.financing ? '−' + money(p.financing) : '0', p.financing ? 'down' : '') })}
       ${row({ title: '淨損益', cls: 'total', end: n(signed(p.netPnl), tone(p.netPnl)) })}
     </ul>`;
@@ -623,7 +624,7 @@
 
   function openCashEvent() {
     if (store.mode !== 'normal') return;
-    const types = [['contribution', '新增投入到交割戶'], ['to_binance', '交割戶轉入幣安'], ['binance_in', '其他資金直接入金幣安'], ['from_binance', '幣安出金'], ['withdrawal', '從交割戶提領'], ['allocation', '調整配置本金（不動用現金）']];
+    const types = [['contribution', '新增投入到交割戶'], ['to_binance', '交割戶轉入幣安'], ['binance_in', '其他資金直接入金幣安'], ['from_binance', '幣安出金'], ['withdrawal', '從交割戶提領'], ['allocation', '調整配置本金（不動用現金）'], ['income', '股利／手續費折讓／利息入帳']];
     openSheet({
       title: '記錄資金', submitLabel: '新增紀錄',
       body: `<div class="form-grid">
@@ -642,7 +643,8 @@
           binance_in: '不經過交割戶（例如信貸直接換 USDT），幣安投入增加',
           from_binance: '幣安投入減少，錢回到交割戶與所選本金',
           withdrawal: '交割戶餘額減少，所選本金減少',
-          allocation: '只調整本金數字，不影響交割戶餘額（例如重新分配長期／波段）'
+          allocation: '只調整本金數字，不影響交割戶餘額（例如重新分配長期／波段）',
+          income: '交割戶餘額增加，計入投資損益（不算投入本金）'
         }[type];
         $('eventPreview').textContent = text;
       },
@@ -650,8 +652,8 @@
         const type = val(form, 'type');
         const e = C.normalizeEvent({
           id: C.uid(), type, date: val(form, 'date'), amountTwd: numVal(form, 'amount'),
-          bucket: val(form, 'bucket') || null, source: val(form, 'source') || null,
-          viaBank: ['contribution', 'to_binance', 'from_binance', 'withdrawal'].includes(type)
+          bucket: type === 'income' ? null : (val(form, 'bucket') || null), source: val(form, 'source') || null,
+          viaBank: ['contribution', 'to_binance', 'from_binance', 'withdrawal', 'income'].includes(type)
         }, 0, []);
         if (e._invalid) throw Error('請填金額與日期');
         const next = C.clone(db); next.cashEvents.push(e);

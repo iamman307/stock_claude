@@ -183,3 +183,19 @@ test('one net-asset point per Taipei day', () => {
   assert.equal(db.navHistory.length, 1);
   assert.equal(db.navHistory[0].totalTwd, 120);
 });
+
+test('income events add to P/L and the bank, but never to invested capital', () => {
+  const db = dbWith({
+    bank: { snapshots: [{ id: 's', date: '2026-10-01', balance: 1000, reserved: 0 }] },
+    binance: { snapshots: [{ id: 'b', date: '2026-10-13', totalTwd: 0 }], strategies: [] },
+    cashEvents: [
+      { id: 'a', date: '2026-09-01', type: 'allocation', amountTwd: 1000, bucket: 'swing' },
+      { id: 'i', date: '2026-10-08T03:50', type: 'income', amountTwd: 584, viaBank: true, note: '折讓' }
+    ]
+  });
+  const p = C.portfolio(db, NOW);
+  assert.equal(p.incomeTwd, 584);
+  assert.equal(p.bank.expected, 1584);
+  assert.equal(C.bucketCapital(db).swing, 1000);
+  assert.equal(p.grossPnl, 584);
+});

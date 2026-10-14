@@ -21,11 +21,11 @@
   const BUCKET_LABEL = { long: '長期', swing: '波段' };
   const SOURCES = ['loan', 'self', 'family', 'other'];
   const SOURCE_LABEL = { loan: '信貸', self: '自有', family: '家人', other: '其他' };
-  const EVENT_TYPES = ['allocation', 'contribution', 'withdrawal', 'to_binance', 'binance_in', 'from_binance', 'bank_adjust'];
+  const EVENT_TYPES = ['allocation', 'contribution', 'withdrawal', 'to_binance', 'binance_in', 'from_binance', 'bank_adjust', 'income'];
   const EVENT_LABEL = {
     allocation: '配置本金', contribution: '新增投入', withdrawal: '提領',
     to_binance: '交割戶轉入幣安', binance_in: '直接入金幣安', from_binance: '幣安出金',
-    bank_adjust: '交割戶對帳調整'
+    bank_adjust: '交割戶對帳調整', income: '股利／折讓／利息'
   };
   const SMALL_NET_USD = 300;          // below this, a bank net amount cannot pin the FX rate
   const FX_DEVIATION_WARN = 0.02;     // implied FX more than 2% from the reference rate
@@ -294,7 +294,7 @@
     const flows = [];
     for (const e of validEvents(db)) {
       if (!e.viaBank || time(e.date) <= anchorAt) continue;
-      const sign = { contribution: 1, withdrawal: -1, to_binance: -1, from_binance: 1, bank_adjust: 1 }[e.type];
+      const sign = { contribution: 1, withdrawal: -1, to_binance: -1, from_binance: 1, bank_adjust: 1, income: 1 }[e.type];
       if (!sign) continue;
       flows.push({ kind: 'event', id: e.id, date: e.date, label: EVENT_LABEL[e.type], amount: sign * e.amountTwd });
     }
@@ -498,10 +498,12 @@
     const stockRealized = sum(pos.realized, r => r.pnlTwd);
     const stockUnrealized = stockPriced ? stockMkt - stockCost : NaN;
     const financing = db.loan.fee + db.loan.interestPaid;
+    // Dividends, fee rebates and account interest are investment returns.
+    const incomeTwd = sum(validEvents(db).filter(e => e.type === 'income'), e => e.amountTwd);
     const cash = bank.configured ? bank.afterPending : NaN;
     const totalAssets = stockPriced && bank.configured && binance.configured ? stockMkt + cash + binance.value : NaN;
     const binancePnl = binance.configured ? binance.pnl : NaN;
-    const grossPnl = stockRealized + stockUnrealized + binancePnl;
+    const grossPnl = stockRealized + stockUnrealized + binancePnl + incomeTwd;
     const netPnl = grossPnl - financing;
     const invested = capital.long + capital.swing + binance.netFunding + binance.laterFunding;
 
@@ -512,7 +514,7 @@
       stockPriced, stockMkt, stockCost, stockRealized, stockUnrealized,
       priceEffect: byBucket.long.priceEffect + byBucket.swing.priceEffect,
       fxEffect: byBucket.long.fxEffect + byBucket.swing.fxEffect,
-      cash, totalAssets, binancePnl, grossPnl, financing, netPnl, invested,
+      cash, totalAssets, binancePnl, incomeTwd, grossPnl, financing, netPnl, invested,
       netPct: invested > 0 && isNum(netPnl) ? netPnl / invested * 100 : NaN,
       swingStats: tradeStats(swingTrips),
       strategy: strategyStats(db.binance.strategies),
