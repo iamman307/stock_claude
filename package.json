@@ -1,0 +1,10 @@
+{
+  "name": "stock-claude",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Local-first personal investment ledger PWA",
+  "scripts": {
+    "test": "node --test \"tests/*.test.cjs\"",
+    "start": "python3 -m http.server 8080"
+  }
+}

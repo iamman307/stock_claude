@@ -1,0 +1,6 @@
+# Never commit personal data or backups
+*.json
+!manifest.webmanifest
+!package.json
+node_modules/
+.DS_Store
