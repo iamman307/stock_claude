@@ -199,3 +199,25 @@ test('income events add to P/L and the bank, but never to invested capital', () 
   assert.equal(C.bucketCapital(db).swing, 1000);
   assert.equal(p.grossPnl, 584);
 });
+
+test('loan schedule reproduces the bank repayment table to the dollar', () => {
+  const s = C.loanSchedule({ principal: 2000000, apr: 2.8, termMonths: 120, startDate: '2026-07-30' }, Date.parse('2026-10-14T22:00:00+08:00'));
+  assert.equal(s.payment, 19129);
+  const pick = d => s.rows.find(r => r.date === d);
+  // first two periods (already paid)
+  assert.deepEqual([pick('2026-08-30').principal, pick('2026-08-30').interest], [14373, 4756]);
+  assert.equal(s.paidCount, 2);
+  // the bank's table from 10/30 onward
+  const bank = { '2026-10-30': [14592, 4537], '2026-11-30': [14476, 4653], '2026-12-30': [14659, 4470], '2027-01-30': [14545, 4584],
+    '2027-02-28': [14873, 4256], '2027-03-30': [14761, 4368], '2027-04-30': [14650, 4479], '2027-05-30': [14829, 4300], '2027-06-30': [14720, 4409], '2027-07-30': [14897, 4232] };
+  for (const [d, [pr, it]] of Object.entries(bank)) assert.deepEqual([pick(d).principal, pick(d).interest], [pr, it], d);
+  assert.equal(s.rows.at(-1).balance, 0);
+  assert.equal(s.next.date, '2026-10-30');
+});
+
+test('financing uses the schedule when the loan terms are complete', () => {
+  const db = dbWith({ loan: { principal: 2000000, fee: 688, apr: 2.8, termMonths: 120, startDate: '2026-07-30', interestPaid: 1 } });
+  const p = C.portfolio(db, NOW);
+  assert.equal(p.financing, 688 + p.loan.interestPaid);
+  assert.ok(p.loan.interestPaid > 9000);
+});

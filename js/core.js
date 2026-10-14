@@ -70,7 +70,7 @@
       fx: { USDTWD: { rate: null, asOf: '', source: '' } },
       bank: { snapshots: [] },
       binance: { snapshots: [], strategies: [] },
-      loan: { principal: 0, fee: 0, apr: null, startDate: '', principalRepaid: 0, interestPaid: 0 },
+      loan: { principal: 0, fee: 0, apr: null, startDate: '', termMonths: null, payment: null, principalRepaid: 0, interestPaid: 0 },
       sources: { asOf: '', loan: 0, self: 0, family: 0 },
       reserve: { loanPayment: 0, emergency: 0 },
       navHistory: [],
@@ -113,6 +113,9 @@
     db.loan = { ...base.loan, ...obj(db.loan, {}) };
     for (const k of ['principal', 'fee', 'principalRepaid', 'interestPaid']) db.loan[k] = num(db.loan[k], 0);
     db.loan.apr = num(db.loan.apr) > 0 ? num(db.loan.apr) : null;
+    db.loan.termMonths = num(db.loan.termMonths) > 0 ? Math.round(num(db.loan.termMonths)) : null;
+    db.loan.payment = num(db.loan.payment) > 0 ? num(db.loan.payment) : null;
+    db.loan.startDate = /^\d{4}-\d{2}-\d{2}$/.test(String(db.loan.startDate || '')) ? db.loan.startDate : '';
     db.sources = { ...base.sources, ...obj(db.sources, {}) };
     db.reserve = { ...base.reserve, ...obj(db.reserve, {}) };
     db.navHistory = arr(db.navHistory).filter(p => p && /^\d{4}-\d{2}-\d{2}$/.test(p.date) && num(p.totalTwd) >= 0);
@@ -468,6 +471,42 @@
     return { db: next, rate, netBase, netTwd: netBase * rate, warnings };
   }
 
+  /* ---------- loan amortization ---------- */
+  // Equal-payment loan, interest accrued daily on the outstanding balance
+  // (actual days / 365, rounded to the dollar), due on the start date's day
+  // each month, clamped to the month's last day. This reproduces Taiwanese
+  // bank repayment tables, e.g. Jan 30 -> Feb 28 counts 29 days.
+  function loanSchedule(loan, now = Date.now()) {
+    const L = loan || {};
+    if (!(L.principal > 0) || !(L.apr > 0) || !(L.termMonths > 0) || !/^\d{4}-\d{2}-\d{2}$/.test(L.startDate || '')) return null;
+    const r = L.apr / 100 / 12, n = L.termMonths;
+    // Banks round the instalment up so the loan is fully repaid within the term.
+    const payment = L.payment > 0 ? L.payment : Math.ceil(L.principal * r / (1 - Math.pow(1 + r, -n)));
+    const [y0, m0, d0] = L.startDate.split('-').map(Number);
+    const utc = (y, m, d) => Date.UTC(y, m - 1, d);
+    const due = k => { const y = y0 + Math.floor((m0 - 1 + k) / 12), m = (m0 - 1 + k) % 12 + 1; const last = new Date(Date.UTC(y, m, 0)).getUTCDate(); return utc(y, m, Math.min(d0, last)); };
+    const today = Date.parse(taipeiDate(now) + 'T00:00:00Z');
+    const rows = [];
+    let balance = L.principal, prev = utc(y0, m0, d0);
+    for (let k = 1; k <= n && balance > 0; k++) {
+      const at = due(k), days = Math.round((at - prev) / DAY);
+      const interest = Math.round(balance * L.apr / 100 * days / 365);
+      const principal = k === n ? balance : Math.min(balance, payment - interest);
+      balance -= principal;
+      rows.push({ k, date: new Date(at).toISOString().slice(0, 10), days, interest, principal, payment: interest + principal, balance, paid: at <= today });
+      prev = at;
+    }
+    const paid = rows.filter(x => x.paid);
+    const next = rows.find(x => !x.paid) || null;
+    const nextYear = rows.filter(x => !x.paid).slice(0, 12);
+    return {
+      payment, rows, paidCount: paid.length,
+      interestPaid: sum(paid, x => x.interest), principalPaid: sum(paid, x => x.principal),
+      outstanding: paid.length ? paid[paid.length - 1].balance : L.principal,
+      next, interestNext12: sum(nextYear, x => x.interest)
+    };
+  }
+
   /* ---------- whole-portfolio summary ---------- */
   function portfolio(db, now = Date.now()) {
     const pos = computePositions(db);
@@ -497,7 +536,9 @@
     const stockCost = sum(rows, r => r.costTwd);
     const stockRealized = sum(pos.realized, r => r.pnlTwd);
     const stockUnrealized = stockPriced ? stockMkt - stockCost : NaN;
-    const financing = db.loan.fee + db.loan.interestPaid;
+    const loan = loanSchedule(db.loan, now);
+    const interestPaid = loan ? loan.interestPaid : db.loan.interestPaid;
+    const financing = db.loan.fee + interestPaid;
     // Dividends, fee rebates and account interest are investment returns.
     const incomeTwd = sum(validEvents(db).filter(e => e.type === 'income'), e => e.amountTwd);
     const cash = bank.configured ? bank.afterPending : NaN;
@@ -514,7 +555,7 @@
       stockPriced, stockMkt, stockCost, stockRealized, stockUnrealized,
       priceEffect: byBucket.long.priceEffect + byBucket.swing.priceEffect,
       fxEffect: byBucket.long.fxEffect + byBucket.swing.fxEffect,
-      cash, totalAssets, binancePnl, incomeTwd, grossPnl, financing, netPnl, invested,
+      loan, interestPaid, cash, totalAssets, binancePnl, incomeTwd, grossPnl, financing, netPnl, invested,
       netPct: invested > 0 && isNum(netPnl) ? netPnl / invested * 100 : NaN,
       swingStats: tradeStats(swingTrips),
       strategy: strategyStats(db.binance.strategies),
@@ -574,7 +615,7 @@
     emptyDb, normalizeDb, normalizeTrade, normalizeEvent,
     tradeBaseAmount, tradeTwd, tradeBankTwd, isPending,
     computePositions, valuePositions, bucketCapital, bankSummary, reconcileBank, binanceSummary,
-    strategyStats, tradeStats, xirr, bucketReturn, settleBatch, portfolio, alerts, recordNav, fxRate
+    strategyStats, tradeStats, xirr, loanSchedule, bucketReturn, settleBatch, portfolio, alerts, recordNav, fxRate
   };
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
   root.Core = api;

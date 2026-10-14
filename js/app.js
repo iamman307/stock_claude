@@ -2,7 +2,7 @@
    renders them and turns form input into new database states. */
 (function () {
   'use strict';
-  const APP_VERSION = '1.0.2';
+  const APP_VERSION = '1.1.0';
   const C = window.Core;
   const store = window.Storage.createStore(window.localStorage);
   const $ = id => document.getElementById(id);
@@ -327,14 +327,26 @@
   function loanSection(p) {
     const L = db.loan;
     if (!L.principal) return '';
-    const outstanding = L.principal - L.principalRepaid;
+    const sch = p.loan;
     const covered = ok(p.grossPnl) ? p.grossPnl - p.financing : NaN;
+    const action = '<button class="btn btn-small" data-act="loan">編輯</button>';
+    if (!sch) {
+      const outstanding = L.principal - L.principalRepaid;
+      return section('信貸成本', `<ul class="rows">
+        ${row({ title: '信貸本金', sub: `已還 ${money(L.principalRepaid)}`, end: n(money(outstanding)) })}
+        ${row({ title: '已付成本', sub: `開辦費 ${money(L.fee)} ＋ 利息 ${money(L.interestPaid)}（手動）`, end: n('−' + money(p.financing), 'down') })}
+        ${row({ title: '投資損益扣掉成本', cls: 'total', end: n(signed(covered), tone(covered)) })}
+      </ul>`, { note: '填入年利率、期數和撥款日，就會每月自動計算利息與本金', action });
+    }
+    const pool = p.invested;
+    const hurdle = pool > 0 ? sch.interestNext12 / pool * 100 : NaN;
     return section('信貸成本', `<ul class="rows">
-      ${row({ title: '信貸本金', sub: `已還 ${money(L.principalRepaid)}`, end: n(money(outstanding)) })}
-      ${row({ title: '年利率', end: n(L.apr ? L.apr + '%' : '未設定') })}
-      ${row({ title: '已付成本', sub: `開辦費 ${money(L.fee)} ＋ 利息 ${money(L.interestPaid)}`, end: n('−' + money(p.financing), 'down') })}
+      ${row({ title: '剩餘本金', sub: `原始 ${money(L.principal)} · 已還 ${sch.paidCount} 期共 ${money(sch.principalPaid)}`, end: n(money(sch.outstanding)) })}
+      ${row({ title: '已付成本', sub: `開辦費 ${money(L.fee)} ＋ 利息 ${money(sch.interestPaid)}`, end: n('−' + money(p.financing), 'down') })}
+      ${sch.next ? row({ title: '下一期', sub: `${day(sch.next.date)} · 本金 ${money(sch.next.principal)} ＋ 利息 ${money(sch.next.interest)}`, end: n(money(sch.next.payment)) }) : ''}
+      ${row({ title: '未來 12 個月利息', sub: ok(hurdle) ? `投資池年報酬要超過 ${hurdle.toFixed(2)}% 才打平` : '', end: n(money(sch.interestNext12)) })}
       ${row({ title: '投資損益扣掉成本', cls: 'total', end: n(signed(covered), tone(covered)) })}
-    </ul>`, { note: '用借來的錢投資，關鍵是報酬有沒有贏過利息', action: '<button class="btn btn-small" data-act="loan">編輯</button>' });
+    </ul>`, { note: `年利率 ${L.apr}%、${L.termMonths} 期、每月 ${money(sch.payment)}；利息每月自動計入，和銀行攤還表同算法`, action });
   }
 
   /* ----- funds ----- */
@@ -714,16 +726,32 @@
     openSheet({
       title: '信貸設定', submitLabel: '儲存',
       body: `<div class="form-grid">
-        ${field('principal', '原始本金', { value: L.principal })}
+        ${field('principal', '原始本金', { value: L.principal || '' })}
         ${field('apr', '年利率（%）', { value: L.apr ?? '' })}
+        ${field('termMonths', '期數（月）', { value: L.termMonths ?? '', hint: '10 年就填 120' })}
+        ${field('startDate', '撥款日', { type: 'date', value: L.startDate, hint: '每月同一天扣款' })}
+        ${field('payment', '每月應繳（選填）', { value: L.payment ?? '', hint: '留空會自動計算；和銀行不同時填銀行的數字' })}
         ${field('fee', '開辦費', { value: L.fee })}
-        ${field('interestPaid', '累計已付利息', { value: L.interestPaid })}
-        ${field('principalRepaid', '累計已還本金', { value: L.principalRepaid })}
-        ${field('startDate', '撥款日', { type: 'date', value: L.startDate })}
+        <div class="preview" id="loanPreview"></div>
+        <p class="section-note full" style="padding:0">沒有年利率或期數時，改用下面兩個手動數字</p>
+        ${field('interestPaid', '累計已付利息（手動）', { value: L.interestPaid })}
+        ${field('principalRepaid', '累計已還本金（手動）', { value: L.principalRepaid })}
       </div>`,
+      onInput: form => {
+        const sch = C.loanSchedule({ principal: numVal(form, 'principal'), apr: numVal(form, 'apr'), termMonths: Math.round(numVal(form, 'termMonths')), startDate: val(form, 'startDate'), payment: numVal(form, 'payment') });
+        const out = $('loanPreview');
+        if (!sch) { out.textContent = '填好本金、年利率、期數和撥款日，這裡會顯示攤還表'; return; }
+        out.innerHTML = `每月 <strong>${money(sch.payment)}</strong> · 已繳 ${sch.paidCount} 期：利息 ${money(sch.interestPaid)}、本金 ${money(sch.principalPaid)}<br>` +
+          sch.rows.slice(Math.max(0, sch.paidCount - 2), sch.paidCount + 3).map(r => `${r.date.slice(5).replace('-', '/')}　本金 ${money(r.principal)}　利息 ${money(r.interest)}${r.paid ? ' ✓' : ''}`).join('<br>');
+      },
       onSubmit: form => {
         const next = C.clone(db);
-        next.loan = { principal: numVal(form, 'principal') || 0, apr: numVal(form, 'apr') > 0 ? numVal(form, 'apr') : null, fee: numVal(form, 'fee') || 0, interestPaid: numVal(form, 'interestPaid') || 0, principalRepaid: numVal(form, 'principalRepaid') || 0, startDate: val(form, 'startDate') };
+        next.loan = {
+          principal: numVal(form, 'principal') || 0, apr: numVal(form, 'apr') > 0 ? numVal(form, 'apr') : null,
+          termMonths: numVal(form, 'termMonths') > 0 ? Math.round(numVal(form, 'termMonths')) : null,
+          payment: numVal(form, 'payment') > 0 ? numVal(form, 'payment') : null, startDate: val(form, 'startDate'),
+          fee: numVal(form, 'fee') || 0, interestPaid: numVal(form, 'interestPaid') || 0, principalRepaid: numVal(form, 'principalRepaid') || 0
+        };
         if (next.loan.principalRepaid > next.loan.principal) throw Error('已還本金不能大於原始本金');
         return commit(next, '更新信貸設定', '信貸設定已更新');
       }
