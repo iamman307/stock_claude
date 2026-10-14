@@ -2,7 +2,7 @@
    renders them and turns form input into new database states. */
 (function () {
   'use strict';
-  const APP_VERSION = '1.0.1';
+  const APP_VERSION = '1.0.2';
   const C = window.Core;
   const store = window.Storage.createStore(window.localStorage);
   const $ = id => document.getElementById(id);
@@ -777,7 +777,7 @@
         let count = 0;
         results.forEach((r, i) => {
           if (r.status === 'fulfilled') { next.quotes[tickers[i]] = { price: r.value.price, currency: 'USD', asOf: C.normalizeTime(r.value.asOf), source: r.value.source }; count++; }
-          else errors.push(`${tickers[i]}：${r.reason.message}`);
+          else errors.push(`${tickers[i]}：${r.reason instanceof TypeError ? '連不到報價服務' : r.reason.message}`);
         });
         if (count) msgs.push(`${count} 檔報價`);
       } else if (force) errors.push('尚未設定 Finnhub 金鑰，美股報價請到設定頁設定或手動輸入');
@@ -786,7 +786,7 @@
         db = store.save(next, '更新行情', { quiet: true });
         render();
       }
-      if (errors.length) showError('部分資料沒更新：' + errors.join('；') + '。舊資料仍保留。');
+      if (errors.length) showError('部分資料沒更新：' + errors.join('；') + `。舊資料仍保留。（版本 ${APP_VERSION}）`);
       else if (msgs.length) toast('已更新' + msgs.join('、'));
       else if (force) toast('行情已是最新');
     } catch (e) { showError(e.message); }

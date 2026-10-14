@@ -1,6 +1,6 @@
 // Network first, cache as fallback, so an update is never stuck behind an old cache.
 // Only same-origin files are cached; market-data requests are never stored.
-const CACHE = 'stock-claude-v1.0.1';
+const CACHE = 'stock-claude-v1.0.2';
 const ASSETS = ['./', './index.html', './css/app.css', './js/core.js', './js/migrate.js', './js/storage.js', './js/market.js', './js/charts.js', './js/app.js', './manifest.webmanifest', './assets/icon.svg', './assets/icon-192.png', './assets/icon-512.png'];
 
 self.addEventListener('install', event => {
@@ -14,7 +14,9 @@ self.addEventListener('fetch', event => {
   const req = event.request;
   if (req.method !== 'GET' || new URL(req.url).origin !== self.location.origin) return;
   event.respondWith(
-    fetch(req).then(res => {
+    // no-cache: always revalidate with the server, so a new version is never
+    // hidden behind the browser's HTTP cache (GitHub Pages caches for 10 min).
+    fetch(req, { cache: 'no-cache' }).then(res => {
       if (res.ok) { const copy = res.clone(); caches.open(CACHE).then(c => c.put(req, copy)); }
       return res;
     }).catch(() => caches.match(req).then(hit => hit || caches.match('./index.html')))
