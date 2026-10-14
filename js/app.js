@@ -2,7 +2,7 @@
    renders them and turns form input into new database states. */
 (function () {
   'use strict';
-  const APP_VERSION = '1.2.0';
+  const APP_VERSION = '1.2.1';
   const C = window.Core;
   const store = window.Storage.createStore(window.localStorage);
   const $ = id => document.getElementById(id);
@@ -144,7 +144,7 @@
       ${row({ lead: `<i class="dot" style="background:${COLORS.cash}"></i>`, title: '交割戶', sub: p.bank.configured ? `預估，含 ${p.bank.pending.length} 筆待交割` : '尚未設定', end: n(money(p.cash)), cls: 'clickable', attrs: 'data-act="gotoFunds"' })}
     </ul>`;
 
-    const planCompact = C.planStatus(db, p).map(pl => section(esc(pl.name), `<ul class="rows">${row({
+    const planCompact = C.planStatus(db, p).map(pl => section(esc(pl.name || pl.refTicker + ' 加碼計畫'), `<ul class="rows">${row({
       title: `${esc(pl.refTicker)} 距高點 <span class="${tone(pl.drawdown)}">${ok(pl.drawdown) ? pl.drawdown.toFixed(1) + '%' : '—'}</span>`,
       sub: pl.ready.length ? `已到加碼點：${pl.ready.map(t => `${esc(t.ticker)} ${money(t.amountTwd)}`).join('、')}` : pl.next ? `下一個加碼點 −${pl.next.dropPct}%（價格 ≤ ${money(pl.next.triggerPrice, 2)}，還要再跌 ${Math.abs(pl.next.gapPct).toFixed(1)}%）` : '所有加碼點都已執行',
       end: n(money(pl.price, 2)), cls: 'clickable', attrs: 'data-act="gotoFunds"'
@@ -399,7 +399,7 @@
   function planCards(p) {
     const list = C.planStatus(db, p);
     if (!list.length) return section('加碼計畫', '<div class="empty">事先寫好「跌多少、買什麼、買多少」，到了加碼點會提醒你</div>', { action: '<button class="btn btn-small btn-primary" data-act="plan">建立計畫</button>' });
-    return list.map(pl => {
+    return list.map((pl, idx) => {
       const head = row({
         title: `${esc(pl.refTicker)} ${money(pl.price, 2)}`,
         sub: pl.high ? `近期高點 ${money(pl.high, 2)}${pl.highAt ? '（' + day(pl.highAt) + '）' : ''} · 高點會隨報價自動更新` : '還沒有高點，請到編輯填入',
@@ -414,18 +414,18 @@
       })).join('');
       const lim = pl.limits.map(l => row({ title: `上限：${esc(l.name || l.tickers.join('、'))}`, sub: `${esc(l.tickers.join('、'))} · 不超過投資池 ${l.maxPct}%`, end: n(ok(l.pct) ? l.pct.toFixed(1) + '%' : '—', l.over ? 'over' : ''), end2: l.over ? n('超過上限', 'over small') : '' })).join('');
       const foot = row({ title: '尚未執行的計畫金額', sub: ok(pl.cash) ? `交割戶交割後預估 ${money(pl.cash)}` : '', end: n(money(pl.remaining), ok(pl.cash) && pl.remaining > pl.cash ? 'over' : ''), cls: 'total' });
-      return section(esc(pl.name), `<ul class="rows">${head}${tr}${lim}${foot}</ul>`, { action: `<button class="btn btn-small" data-act="plan" data-plan="${esc(pl.id)}">編輯</button>`, note: '到了加碼點會在總覽提醒；買進後記得記一筆交易，再回來按「已買進」' });
-    }).join('');
+      return section(esc(pl.name), `<ul class="rows">${head}${tr}${lim}${foot}</ul>`, { action: `<button class="btn btn-small" data-act="plan" data-plan="${esc(pl.id)}">編輯</button>`, note: idx ? '' : '到了加碼點會在總覽提醒；買進後記得記一筆交易，再回來按「已買進」' });
+    }).join('') + `<div class="btn-row" style="margin:-4px 0 14px"><button class="btn" data-act="planNew">${ICON.plus.replace('<svg', '<svg width="18" height="18"')}新增另一個計畫</button></div>`;
   }
 
-  function openPlan(id) {
+  function openPlan(id, blank = false) {
     const existing = (db.plans || []).find(x => x.id === id);
     const q = db.quotes.QQQM;
-    const pl = existing || {
+    const pl = existing || (blank ? { name: '', refTicker: '', high: '', tranches: [], limits: [] } : {
       name: 'QQQM 回調加碼', refTicker: 'QQQM', high: q ? q.price : '',
       tranches: [[0, 'QQQM', 100000], [10, 'QQQM', 100000], [15, 'QQQM', 100000], [20, 'QQQM', 100000], [25, 'QLD', 100000]].map(([d, t, a]) => ({ dropPct: d, ticker: t, amountTwd: a })),
       limits: [{ name: 'QLD 槓桿 ETF', tickers: ['QLD'], maxPct: 10 }, { name: '半導體個股', tickers: ['AVGO', 'SNDK', 'MU'], maxPct: 40 }]
-    };
+    });
     const T = [...pl.tranches]; while (T.length < 6) T.push({ dropPct: '', ticker: '', amountTwd: '' });
     const Lm = [...pl.limits]; while (Lm.length < 3) Lm.push({ name: '', tickers: [], maxPct: '' });
     const trRows = T.map((t, i) => `<div class="field"><label for="f-d${i}">跌幅 %</label><input id="f-d${i}" name="d${i}" type="number" step="any" inputmode="decimal" value="${esc(t.dropPct)}" placeholder="0＝現在"></div>
@@ -980,7 +980,7 @@
       addTrade: openAddTrade, settle: openSettle, trade: () => openTrade(el.dataset.id), position: () => openPosition(el.dataset.key),
       event: () => openEvent(el.dataset.id), cashEvent: openCashEvent, strategy: openStrategy, quote: openQuote, loan: openLoan,
       fxManual: openFxManual, finnhub: openFinnhub,
-      plan: () => openPlan(el.dataset.plan), planDone: () => markTranche(el.dataset.plan, el.dataset.tranche, true), planUndo: () => { if (confirm('取消這個加碼點的「已買進」標記？')) markTranche(el.dataset.plan, el.dataset.tranche, false); },
+      plan: () => openPlan(el.dataset.plan), planNew: () => openPlan(undefined, true), planDone: () => markTranche(el.dataset.plan, el.dataset.tranche, true), planUndo: () => { if (confirm('取消這個加碼點的「已買進」標記？')) markTranche(el.dataset.plan, el.dataset.tranche, false); },
       finnhubRemove: () => { store.setKey(''); renderSettings(); toast('金鑰已從這台裝置移除'); },
       restore: () => {
         if (!confirm('確定還原到這個版本？目前的資料會先保留在還原紀錄裡。')) return;
