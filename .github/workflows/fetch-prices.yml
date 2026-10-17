@@ -1,0 +1,25 @@
+name: Fetch prices (temporary)
+on:
+  push:
+    branches: [backtest-data]
+permissions:
+  contents: write
+jobs:
+  fetch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: '3.12' }
+      - run: pip install yfinance pandas
+      - run: |
+          mkdir -p prices
+          python - <<'PY'
+          import yfinance as yf
+          for t in ["MU","SNDK","QQQM","QQQ","XLV","CLS","QLD","AVGO","VOO","0050.TW","SPY"]:
+              df = yf.download(t, period="max", interval="1d", auto_adjust=True, progress=False, multi_level_index=False)
+              df.to_csv(f"prices/{t}.csv"); print(t, len(df), df.index.min(), df.index.max())
+          PY
+      - run: |
+          git config user.name "price-bot"; git config user.email "price-bot@users.noreply.github.com"
+          git add prices && git commit -m "prices" && git push
