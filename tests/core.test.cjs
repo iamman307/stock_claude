@@ -245,3 +245,34 @@ test('dip-buying plan: drawdown, triggers, ratcheting high and concentration lim
   db.quotes.QQQM.price = 320; db = C.updatePlanHighs(db); assert.equal(db.plans[0].high, 320);
   db.quotes.QQQM.price = 250; db = C.updatePlanHighs(db); assert.equal(db.plans[0].high, 320);
 });
+
+test('dip-buying plan deadline: untriggered tranches unlock one per period after the deadline', () => {
+  const db = dbWith({
+    quotes: { XLV: { price: 180, currency: 'USD', asOf: '2026-12-30T05:00:00+08:00' } },
+    bank: { snapshots: [{ id: 's', date: '2026-10-10', balance: 200000, reserved: 0 }] },
+    binance: { snapshots: [{ id: 'b', date: '2026-10-13', totalTwd: 0 }], strategies: [] },
+    plans: [{ refTicker: 'XLV', high: 182, deadline: '2026-12-31', everyMonths: 1,
+      tranches: [{ dropPct: 0, ticker: 'XLV', amountTwd: 80000, doneAt: '2026-10-14T22:00' }, { dropPct: 5, ticker: 'XLV', amountTwd: 60000 }, { dropPct: 10, ticker: 'XLV', amountTwd: 60000 }] }]
+  });
+  const at = d => Date.parse(d + 'T12:00:00+08:00');
+  const st = d => C.planStatus(db, C.portfolio(db, at(d)), at(d))[0];
+  // before the deadline nothing unlocks; due dates are spaced a month apart
+  let pl = st('2026-12-30');
+  assert.equal(pl.ready.length, 0); assert.equal(pl.daysLeft, 1); assert.equal(pl.expired, false);
+  assert.deepEqual(pl.tranches.map(t => t.dueDate), ['', '2026-12-31', '2027-01-31']);
+  assert.match(C.alerts(db, C.portfolio(db, at('2026-12-30')), at('2026-12-30')).map(a => a.text).join('\n'), /再 1 天到截止日/);
+  // on the deadline the shallower tranche unlocks by time
+  pl = st('2026-12-31');
+  assert.deepEqual(pl.ready.map(t => [t.dropPct, t.reachedBy]), [[5, 'time']]); assert.equal(pl.expired, true);
+  assert.match(C.alerts(db, C.portfolio(db, at('2026-12-31')), at('2026-12-31')).map(a => a.text).join('\n'), /到截止日都沒跌到 −5%/);
+  // a month later the next one too; month-end clamping (Jan 31 -> Feb 28)
+  assert.equal(st('2027-01-31').ready.length, 2);
+  db.plans[0].deadline = '2027-01-31';
+  assert.deepEqual(st('2027-01-01').tranches.map(t => t.dueDate), ['', '2027-01-31', '2027-02-28']);
+  // a price trigger still wins before the deadline, and no deadline keeps old behaviour
+  db.quotes.XLV.price = 172; pl = st('2026-11-05');
+  assert.deepEqual(pl.ready.map(t => [t.dropPct, t.reachedBy]), [[5, 'price']]);
+  assert.equal(pl.tranches[2].dueDate, '2027-01-31', 'only tranches still waiting on price take a time slot');
+  assert.equal(C.normalizePlan({ refTicker: 'X', tranches: [] }).deadline, '');
+  assert.equal(C.normalizePlan({ refTicker: 'X', everyMonths: 0 }).everyMonths, 1);
+});

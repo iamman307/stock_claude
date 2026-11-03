@@ -2,7 +2,7 @@
    renders them and turns form input into new database states. */
 (function () {
   'use strict';
-  const APP_VERSION = '1.2.1';
+  const APP_VERSION = '1.3.0';
   const C = window.Core;
   const store = window.Storage.createStore(window.localStorage);
   const $ = id => document.getElementById(id);
@@ -146,7 +146,7 @@
 
     const planCompact = C.planStatus(db, p).map(pl => section(esc(pl.name || pl.refTicker + ' 加碼計畫'), `<ul class="rows">${row({
       title: `${esc(pl.refTicker)} 距高點 <span class="${tone(pl.drawdown)}">${ok(pl.drawdown) ? pl.drawdown.toFixed(1) + '%' : '—'}</span>`,
-      sub: pl.ready.length ? `已到加碼點：${pl.ready.map(t => `${esc(t.ticker)} ${money(t.amountTwd)}`).join('、')}` : pl.next ? `下一個加碼點 −${pl.next.dropPct}%（價格 ≤ ${money(pl.next.triggerPrice, 2)}，還要再跌 ${Math.abs(pl.next.gapPct).toFixed(1)}%）` : '所有加碼點都已執行',
+      sub: pl.ready.length ? `${pl.ready.some(t => t.reachedBy === 'time') ? '已到截止日，照計畫買' : '已到加碼點'}：${pl.ready.map(t => `${esc(t.ticker)} ${money(t.amountTwd)}`).join('、')}` : pl.next ? `下一個加碼點 −${pl.next.dropPct}%（價格 ≤ ${money(pl.next.triggerPrice, 2)}，還要再跌 ${Math.abs(pl.next.gapPct).toFixed(1)}%）` : '所有加碼點都已執行',
       end: n(money(pl.price, 2)), cls: 'clickable', attrs: 'data-act="gotoFunds"'
     })}</ul>`)).join('');
     $('view-overview').innerHTML = band + alertsHtml + planCompact +
@@ -402,13 +402,14 @@
     return list.map((pl, idx) => {
       const head = row({
         title: `${esc(pl.refTicker)} ${money(pl.price, 2)}`,
-        sub: pl.high ? `近期高點 ${money(pl.high, 2)}${pl.highAt ? '（' + day(pl.highAt) + '）' : ''} · 高點會隨報價自動更新` : '還沒有高點，請到編輯填入',
+        sub: (pl.high ? `近期高點 ${money(pl.high, 2)}${pl.highAt ? '（' + day(pl.highAt) + '）' : ''} · 高點會隨報價自動更新` : '還沒有高點，請到編輯填入')
+          + (pl.deadline ? `<br>截止日 ${esc(pl.deadline.replace(/-/g, '/'))}${pl.remaining > 0 ? (pl.expired ? ` · 已過，沒跌到的每 ${pl.everyMonths} 個月買一批` : ` · 還有 ${pl.daysLeft} 天`) : ''}` : '<br>沒有截止日：一直沒跌到就一直不買'),
         end: n(ok(pl.drawdown) ? pl.drawdown.toFixed(1) + '%' : '—', tone(pl.drawdown)), end2: n('距高點')
       });
       const tr = pl.tranches.map(t => row({
         lead: `<span class="tag" style="min-width:46px;text-align:center">${t.dropPct ? '−' + t.dropPct + '%' : '現在'}</span>`,
         title: `${esc(t.ticker)} ${money(t.amountTwd)}`,
-        sub: t.done ? `已執行 ${day(t.doneAt)}` : `觸發價 ≤ ${money(t.triggerPrice, 2)}${!t.reached && ok(t.gapPct) ? ` · 還要再跌 ${Math.abs(t.gapPct).toFixed(1)}%` : ''}${t.breaches && t.breaches.length ? ` · 會超過「${esc(t.breaches.join('、'))}」上限` : ''}`,
+        sub: t.done ? `已執行 ${day(t.doneAt)}` : t.reachedBy === 'time' ? `沒跌到觸發價 ${money(t.triggerPrice, 2)}，${esc(t.dueDate.slice(5).replace('-', '/'))} 起照計畫買` : `觸發價 ≤ ${money(t.triggerPrice, 2)}${!t.reached && ok(t.gapPct) ? ` · 還要再跌 ${Math.abs(t.gapPct).toFixed(1)}%` : ''}${!t.reached && t.dueDate ? ` · 沒跌到的話 ${esc(t.dueDate.slice(5).replace('-', '/'))} 起照買` : ''}${t.breaches && t.breaches.length ? ` · 會超過「${esc(t.breaches.join('、'))}」上限` : ''}`,
         end: t.done ? `<button class="btn btn-small" data-act="planUndo" data-plan="${esc(pl.id)}" data-tranche="${esc(t.id)}">取消</button>`
           : t.reached ? `<button class="btn btn-small btn-primary" data-act="planDone" data-plan="${esc(pl.id)}" data-tranche="${esc(t.id)}">已買進</button>` : n('未到', 'muted')
       })).join('');
@@ -440,6 +441,8 @@
         ${field('pname', '計畫名稱', { type: 'text', value: pl.name, full: true })}
         ${field('ref', '用哪一檔判斷跌幅', { type: 'text', value: pl.refTicker, attrs: 'autocapitalize="characters"', hint: 'QQQM 等同那斯達克 100' })}
         ${field('high', '近期最高價', { value: pl.high ?? '', hint: '填 52 週或近期高點；之後報價創高會自動更新' })}
+        ${field('deadline', '截止日（可不填）', { type: 'date', value: pl.deadline || '', hint: '到這天還沒跌到的加碼點，改成分批照買' })}
+        ${field('every', '到期後每幾個月買一批', { value: pl.everyMonths || 1, attrs: 'inputmode="numeric" min="1" step="1"', hint: '1＝每個月解鎖一個加碼點' })}
         <p class="section-note full" style="padding:0;margin-top:6px">加碼點（跌幅相對高點；0 代表現在就買）</p>
         ${trRows}
         <p class="section-note full" style="padding:0;margin-top:6px">集中度上限（佔整個投資池的比例，超過會提醒）</p>
@@ -459,7 +462,7 @@
         const limits = Lm.map((l, i) => ({ id: l.id, name: val(form, 'ln' + i), tickers: val(form, 'lt' + i), maxPct: numVal(form, 'lp' + i) }));
         const high = numVal(form, 'high');
         if (!(high > 0)) throw Error('請填近期最高價，才能計算跌幅');
-        const plan = C.normalizePlan({ id: existing ? existing.id : undefined, name: val(form, 'pname'), refTicker: val(form, 'ref'), high, highAt: existing && existing.high === high ? existing.highAt : C.nowIso(), tranches, limits, createdAt: existing ? existing.createdAt : undefined });
+        const plan = C.normalizePlan({ id: existing ? existing.id : undefined, name: val(form, 'pname'), refTicker: val(form, 'ref'), high, highAt: existing && existing.high === high ? existing.highAt : C.nowIso(), tranches, limits, deadline: val(form, 'deadline'), everyMonths: numVal(form, 'every'), createdAt: existing ? existing.createdAt : undefined });
         if (!plan) throw Error('請填判斷跌幅的代號');
         let next = C.clone(db);
         next.plans = existing ? next.plans.map(x => (x.id === existing.id ? plan : x)) : [...(next.plans || []), plan];

@@ -187,7 +187,9 @@
       id: String(l.id || uid()), name: String(l.name || ''), tickers: (Array.isArray(l.tickers) ? l.tickers : String(l.tickers || '').split(/[\s,，、]+/)).map(x => String(x).trim().toUpperCase()).filter(Boolean),
       maxPct: num(l.maxPct, NaN)
     })).filter(l => l.tickers.length && l.maxPct > 0);
-    return { id: String(raw.id || uid()), name: String(raw.name || ref + ' 回調加碼'), refTicker: ref, high: num(raw.high) > 0 ? num(raw.high) : null, highAt: raw.highAt ? normalizeTime(raw.highAt) : '', tranches, limits, createdAt: normalizeTime(raw.createdAt) || nowIso() };
+    const deadline = /^\d{4}-\d{2}-\d{2}$/.test(String(raw.deadline || '')) ? String(raw.deadline) : '';
+    const everyMonths = Math.max(1, Math.round(num(raw.everyMonths, 1)) || 1);
+    return { id: String(raw.id || uid()), name: String(raw.name || ref + ' 回調加碼'), refTicker: ref, high: num(raw.high) > 0 ? num(raw.high) : null, highAt: raw.highAt ? normalizeTime(raw.highAt) : '', tranches, limits, deadline, everyMonths, createdAt: normalizeTime(raw.createdAt) || nowIso() };
   }
 
   // The reference high only ever ratchets up, from the price the owner entered
@@ -202,16 +204,35 @@
     return changed ? { ...db, plans } : db;
   }
 
-  function planStatus(db, p) {
+  // 'YYYY-MM-DD' plus n calendar months, clamped to the end of the target month.
+  function addMonthsDate(date, n) {
+    const [y, m, d] = date.split('-').map(Number);
+    const t = new Date(Date.UTC(y, m - 1 + n, 1));
+    const last = new Date(Date.UTC(t.getUTCFullYear(), t.getUTCMonth() + 1, 0)).getUTCDate();
+    t.setUTCDate(Math.min(d, last));
+    return t.toISOString().slice(0, 10);
+  }
+
+  // A plan may carry a deadline: tranches the price never reached by then unlock
+  // one at a time, every `everyMonths` months, starting on the deadline, so a
+  // market that keeps rising does not leave the money idle forever.
+  function planStatus(db, p, now = Date.now()) {
     const pool = p.totalAssets;
+    const today = taipeiDate(now);
     const mktOf = t => sum(p.positions.filter(r => r.ticker === t && r.priced), r => r.mktTwd);
     return (db.plans || []).map(pl => {
       const q = db.quotes[pl.refTicker];
       const price = q && q.price > 0 ? q.price : NaN;
       const drawdown = pl.high > 0 && isNum(price) ? (price / pl.high - 1) * 100 : NaN;
+      let k = 0;
       const tranches = pl.tranches.map(t => {
         const trigger = pl.high > 0 ? pl.high * (1 - t.dropPct / 100) : NaN;
-        return { ...t, triggerPrice: trigger, reached: isNum(price) && price <= trigger + 1e-9, done: Boolean(t.doneAt), gapPct: isNum(price) && trigger > 0 ? (price / trigger - 1) * 100 : NaN };
+        const byPrice = isNum(price) && price <= trigger + 1e-9;
+        const done = Boolean(t.doneAt);
+        // Time unlocks only count tranches still waiting on price, in drop order.
+        const dueDate = pl.deadline && !done && !byPrice ? addMonthsDate(pl.deadline, (k++) * (pl.everyMonths || 1)) : '';
+        const byTime = Boolean(dueDate) && today >= dueDate;
+        return { ...t, triggerPrice: trigger, reached: byPrice || byTime, reachedBy: byPrice ? 'price' : byTime ? 'time' : '', dueDate, done, gapPct: isNum(price) && trigger > 0 ? (price / trigger - 1) * 100 : NaN };
       });
       const ready = tranches.filter(t => t.reached && !t.done);
       const next = tranches.find(t => !t.reached && !t.done) || null;
@@ -224,7 +245,8 @@
       for (const t of ready) {
         t.breaches = limits.filter(l => l.tickers.includes(t.ticker) && pool > 0 && (l.value + t.amountTwd) / pool * 100 > l.maxPct).map(l => l.name || l.tickers.join('、'));
       }
-      return { ...pl, price, quoteAsOf: q ? q.asOf : '', drawdown, tranches, ready, next, remaining, limits, cash: p.bank.configured ? p.bank.afterPending : NaN };
+      const daysLeft = pl.deadline ? Math.round((Date.parse(pl.deadline + 'T00:00:00Z') - Date.parse(today + 'T00:00:00Z')) / DAY) : NaN;
+      return { ...pl, price, quoteAsOf: q ? q.asOf : '', drawdown, tranches, ready, next, remaining, limits, daysLeft, expired: Boolean(pl.deadline) && daysLeft <= 0 && remaining > 0, cash: p.bank.configured ? p.bank.afterPending : NaN };
     });
   }
 
@@ -650,8 +672,10 @@
     if ((db.trades.length || db.cashEvents.length) && (!isNum(lastExport) || (updated > lastExport && now - lastExport > days * DAY))) {
       add('warning', isNum(lastExport) ? `已 ${Math.floor((now - lastExport) / DAY)} 天沒匯出備份` : '還沒匯出過備份，資料只存在這支手機', 'backup');
     }
-    for (const pl of planStatus(db, p)) {
-      for (const t of pl.ready) add('warning', `${pl.refTicker} 距高點 ${Math.abs(pl.drawdown).toFixed(1)}%，已到加碼點：${t.ticker} ${Math.round(t.amountTwd).toLocaleString('zh-TW')} 元${t.breaches && t.breaches.length ? `（會超過「${t.breaches.join('、')}」上限）` : ''}`, 'plan');
+    for (const pl of planStatus(db, p, now)) {
+      for (const t of pl.ready) if (t.reachedBy === 'time') add('warning', `${pl.name}：${pl.refTicker} 到截止日都沒跌到 −${t.dropPct}%，照計畫分批買進：${t.ticker} ${Math.round(t.amountTwd).toLocaleString('zh-TW')} 元${t.breaches && t.breaches.length ? `（會超過「${t.breaches.join('、')}」上限）` : ''}`, 'plan');
+      else add('warning', `${pl.refTicker} 距高點 ${Math.abs(pl.drawdown).toFixed(1)}%，已到加碼點：${t.ticker} ${Math.round(t.amountTwd).toLocaleString('zh-TW')} 元${t.breaches && t.breaches.length ? `（會超過「${t.breaches.join('、')}」上限）` : ''}`, 'plan');
+      if (pl.deadline && !pl.expired && pl.daysLeft <= 7 && pl.remaining > 0) add('info', `${pl.name} 再 ${pl.daysLeft} 天到截止日，之後沒跌到的加碼點會改成每 ${pl.everyMonths} 個月買一批`, 'plan');
       for (const l of pl.limits) if (l.over) add('info', `「${l.name || l.tickers.join('、')}」佔投資池 ${l.pct.toFixed(1)}%，超過你設的 ${l.maxPct}%`, 'plan');
     }
     const rank = { critical: 0, warning: 1, info: 2 };
